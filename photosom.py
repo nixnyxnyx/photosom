@@ -66,6 +66,7 @@ class PhotoSOM(object):
         # u g r i z y by default
         self.train_phot = self.train[:, 1:]
         self.test_phot = self.test[:, 1:]
+        print("%d training and %d testing galaxies initialized"%(self.train_z.shape[0], self.test_z.shape[0]))
         
         self.selection_bins = 30
         self.ml_bins = 100
@@ -83,27 +84,27 @@ class PhotoSOM(object):
         
         
     def selFuncHelper(self, filter1, filter2):
-        color = self.train[:, filter1]-self.train[:, filter2]
-        redshift = self.train[:, 0]
+        phot = self.train_phot.copy()
+        color = phot[:, filter1]-phot[:, filter2]
+        redshift = self.train_z.copy()
         cut, edges = pd.qcut(color, q=self.selection_bins, retbins=True)
     
-        result = self.train.copy()
         for i in range(len(edges)-1):
             bin_population = redshift[(color>edges[i])&(color<edges[i+1])]
             cutoff = np.quantile(bin_population, self.quantile_cut)
             mask = ~((color>edges[i])&(color<edges[i+1])&(redshift<cutoff))
-            result = result[mask]
+            phot = phot[mask]
             color = color[mask]
             redshift = redshift[mask]
-        return result
+        return redshift, phot
     
     
-    def rangeFuncHelper(self, filter3):
-        z_data = self.train[:, 0]
-        mag_data = self.train[:, 1:]
+    def rangeFuncHelper(self, color):
+        z_data = self.train_z.copy()
+        mag_data = self.train_phot.copy()
         mask_z = (z_data > self.z_range[0]) & (z_data < self.z_range[1])
         mag_data_masked = mag_data[mask_z]
-        mask_mag = (mag_data_masked[:,filter3] > self.mag_range[0]) & (mag_data_masked[:,filter3] < self.mag_range[1])
+        mask_mag = (mag_data_masked[:,color] > self.mag_range[0]) & (mag_data_masked[:,color] < self.mag_range[1])
         return (z_data[mask_z][mask_mag], mag_data_masked[mask_mag])
     
     
@@ -115,36 +116,48 @@ class PhotoSOM(object):
         self.transformData()
 
         
-    def assignRange(self, z_range, mag_range, filter3=3):
+    def assignRange(self, z_range, mag_range, mag_filter=3):
         self.z_range = z_range
         self.mag_range = mag_range
-        self.filter3 = filter3
+        self.filter3 = mag_filter
         self.transformData()
     
 
     def transformData(self):
-        sel_train = self.selFuncHelper(self.filter1, self.filter2)
-        self.train_z, self.train_phot = self.rangeFuncHelper(self.filter3)
+        self.train_z = self.train[:, 0]
+        self.train_phot = self.train[:, 1:]
         
+        self.train_z, self.train_phot = self.selFuncHelper(self.filter1, self.filter2)
+        self.train_z, self.train_phot = self.rangeFuncHelper(self.filter3)
+    
+    
+    def idealGaussian(self, sample_sigma, pdf_sigma):
         # The number of galaxies represented in the train/test sets
         print("There are %d training galaxies selected"%self.train_z.shape[0])
-    
-    
-    def idealGaussian(self, sample_sigma=0.02, pdf_sigma=0.2):
+        
         gauss_ideal = np.empty(len(self.test_z), dtype='O')
         for i in range(len(gauss_ideal)):
             gauss_ideal[i] = sps.norm(loc=self.test_z[i], scale=sample_sigma)
 
         pdfs_ideal = np.empty(len(self.test_z), dtype='O')
         for i in range(len(gauss_ideal)):
-            pdfs_ideal[i] = sps.norm(loc=gauss_ideal[i].rvs(random_state=random_state), scale=pdf_sigma)
+            if self.random_seed != None:
+                pdfs_ideal[i] = sps.norm(loc=gauss_ideal[i].rvs(random_state=self.random_state), scale=pdf_sigma)
+            else:
+                pdfs_ideal[i] = sps.norm(loc=gauss_ideal[i].rvs(), scale=pdf_sigma)
         self.pdfs = pdfs_ideal
         return pdfs_ideal
 
 
     def randomForestTraining(self):
+        # The number of galaxies represented in the train/test sets
+        print("There are %d training galaxies selected"%self.train_z.shape[0])
+        
         # Create the model object and fit the training data
-        self.model = ClassCond(RandomForestClassifier(n_jobs=-1), bins=self.ml_bins)
+        if self.random_seed != None:
+            self.model = ClassCond(RandomForestClassifier(n_jobs=-1, random_state=self.random_state), bins=self.ml_bins)
+        else:
+            self.model = ClassCond(RandomForestClassifier(n_jobs=-1), bins=self.ml_bins)
         self.model.fit(self.train_phot, self.train_z, z_offset=True, Z=self.train[:, 0])
 
         # Create predictions on test data and get useable statistics from it
@@ -169,9 +182,9 @@ class PhotoSOM(object):
     
     
     def predictionPlot(self, bins=100, title="", pixel=300):
-        pred_mean = []
+        pred_mean = np.empty(len(self.pdfs), dtype='O')
         for i in range(len(self.pdfs)):
-            pred_means[i] = self.pdfs[i].mean()
+            pred_mean[i] = self.pdfs[i].mean()
         
         z_range = [np.min(self.train[:,0]), np.max(self.train[:,0])]
         pz_data = pd.DataFrame({'true_z': self.test_z, 'predicted': pred_mean})
@@ -195,9 +208,9 @@ class PhotoSOM(object):
         # Data assignment and normalization
         data = np.apply_along_axis(lambda x: x/np.linalg.norm(x), 1, self.test_phot)
         if self.random_seed != None:
-            self.som = MiniSom(size, size, len(self.test_phot), sigma=1.0, learning_rate=0.5, random_seed=self.random_seed)
+            self.som = MiniSom(size, size, self.test_phot.shape[1], sigma=1.0, learning_rate=0.5, random_seed=self.random_seed)
         else:
-            self.som = MiniSom(size, size, len(self.test_phot), sigma=1.0, learning_rate=0.5)
+            self.som = MiniSom(size, size, self.test_phot.shape[1], sigma=1.0, learning_rate=0.5)
         self.som.random_weights_init(data)
         self.som.train(data, data.shape[0])
         self.som_map = self.som.win_map(data)
@@ -210,13 +223,13 @@ class PhotoSOM(object):
             self.index_map[c[1],c[0]] = index
 
     
-    def colorMap(self, title="", pixel=300, scheme='purples', filter4=2, filter5=3):
+    def colorMap(self, title="", pixel=300, scheme='purples', filter1=2, filter2=3):
         ri_colormap = np.zeros((self.size, self.size))
         for i in range(self.size):
             for j in range(self.size):
                 if self.index_map[i,j]:
                     data_cut = self.test_phot[self.index_map[i,j]]
-                    ri_color = data_cut[:,filter4] - data_cut[:,filter5]
+                    ri_color = data_cut[:,filter1] - data_cut[:,filter2]
                     ri_colormap[i,j] = np.mean(ri_color)
                     
         x, y = np.meshgrid(range(0, self.size), range(self.size-1,-1,-1))
@@ -269,8 +282,8 @@ class PhotoSOM(object):
         ).properties(width=pixel,height=pixel,title=title)
     
 
-    def chiSquaredMap(self, bins=10, title="", pixel=300, scheme='inferno'):
-        chi_dof_map = np.zeros((size, size))
+    def chiSquaredMap(self, bins=10, title="", pixel=300, scheme='viridis'):
+        chi_dof_map = np.zeros((self.size, self.size))
         for i in range(self.size):
             for j in range(self.size):
                 cdf = []
@@ -282,7 +295,7 @@ class PhotoSOM(object):
                         
                 hist, endpoints = np.histogram(cdf, bins)
                 chi_squared = 0
-                for k in range(n_bins):
+                for k in range(bins):
                     chi_squared += ((hist[k] - len(cdf) / bins)**2)/(len(cdf) / bins)
                 chi_dof_map[i,j] = chi_squared/(bins-1)
         
@@ -296,5 +309,7 @@ class PhotoSOM(object):
     
     
     def cdfHistogram(self, bins=30):
-        cdfs = self.pdfs.cdf(self.test_z)
+        cdfs = np.empty(len(self.pdfs), dtype='O')
+        for i in range(len(self.pdfs)):
+            cdfs[i] = self.pdfs[i].cdf(self.test_z[i])
         return alt.Chart(pd.DataFrame({"CDF": cdfs})).mark_bar().encode(alt.X("CDF:Q", bin=alt.Bin(step=1./bins)), y='count()')
