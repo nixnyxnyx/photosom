@@ -47,6 +47,7 @@ class PhotoSOM(object):
     def __init__(self, train, test, random_seed=None):
         """
         An object that takes in training and test datasets of galaxes for use in machine learning.
+        
         Parameters:
         train: numpy array
             An array of length (number of phomometric bands + 1) which holds the redshift truth values
@@ -54,6 +55,8 @@ class PhotoSOM(object):
             Used for creating the ML model.
         test: numpy array
             Same dimensions as train, used for prediction.
+            
+        Returns: None
         """
         
         # Since there are some 99.0 values in u-band, we need to exclude that so the SOM doesn't freak out
@@ -67,6 +70,9 @@ class PhotoSOM(object):
         self.train_phot = self.train[:, 1:]
         self.test_phot = self.test[:, 1:]
         print("%d training and %d testing galaxies initialized"%(self.train_z.shape[0], self.test_z.shape[0]))
+        
+        self.train_id = np.arange(len(self.train_z))
+        self.test_id = np.arange(len(self.test_z))
         
         self.selection_bins = 30
         self.ml_bins = 100
@@ -84,6 +90,12 @@ class PhotoSOM(object):
         
         
     def selFuncHelper(self, filter1, filter2):
+        '''
+        Helper function that applies the selection function
+        
+        Should not be used outside this class
+        '''
+        
         phot = self.train_phot.copy()
         color = phot[:, filter1]-phot[:, filter2]
         redshift = self.train_z.copy()
@@ -100,6 +112,12 @@ class PhotoSOM(object):
     
     
     def rangeFuncHelper(self, color):
+        '''
+        Helper function that applies the range cut
+        
+        Should not be used outside this class
+        '''
+        
         z_data = self.train_z.copy()
         mag_data = self.train_phot.copy()
         mask_z = (z_data > self.z_range[0]) & (z_data < self.z_range[1])
@@ -109,6 +127,22 @@ class PhotoSOM(object):
     
     
     def selectionFunction(self, bins, quantile, filter1=2, filter2=3):
+        """
+        A function which bin galaxies into equal numbers by color, then cuts the lower end of the redshift by the given percentile. The optical bands used for the color can be changed.
+        
+        Parameters:
+        bins: int
+            Number of bins used
+        quantile: float
+            A number between 0.0 and 1.0 which defines the percentage of redshift which is cut from each bin.
+        filter1: int
+            A number which defines the first color band used to define color (filter1-filter2)
+        filter2: int
+            Second color band
+        
+        Returns: None
+        """
+        
         self.selection_bins = bins
         self.quantile_cut = quantile
         self.filter1 = filter1
@@ -117,6 +151,20 @@ class PhotoSOM(object):
 
         
     def assignRange(self, z_range, mag_range, mag_filter=3):
+        """
+        A function which cuts the dataset based on the given intervals
+        
+        Parameters:
+        z_range: list/tuple
+            A list of length 2, of form [min, max] with minimum and maximum values for redshift
+        mag_range: list/tuple
+            A list of length 2, of form [min, max] with minimum and maximum values for magnitude in a given optical band
+        mag_filter: int
+            The optical band in which to cut the magnitude range
+        
+        Returns: None
+        """
+        
         self.z_range = z_range
         self.mag_range = mag_range
         self.filter3 = mag_filter
@@ -124,6 +172,12 @@ class PhotoSOM(object):
     
 
     def transformData(self):
+        '''
+        Helper function to update the dataset
+        
+        Should not be used outside this class
+        '''
+        
         self.train_z = self.train[:, 0]
         self.train_phot = self.train[:, 1:]
         
@@ -132,6 +186,18 @@ class PhotoSOM(object):
     
     
     def idealGaussian(self, sample_sigma, pdf_sigma):
+        '''
+        Creates prediction pdfs based on slight random deviations from the truth values. The resulting pdf is a smooth gaussian.
+        
+        Parameters:
+        sample_sigma: float
+            The deviation from the truth redshift value at which the new mean will be sampled
+        pdf_sigma: float
+            The deviation of the resulting gaussian pdf
+        
+        Returns: Array of scipy.rv_continuous objects, which house smooth pdfs for each galaxy
+        '''
+        
         # The number of galaxies represented in the train/test sets
         print("There are %d training galaxies selected"%self.train_z.shape[0])
         
@@ -150,6 +216,12 @@ class PhotoSOM(object):
 
 
     def randomForestTraining(self):
+        '''
+        Creates prediction pdfs based on Machine Learning (Random Forest classifier)
+        
+        Returns: Array of scipy.rv_continuous objects, which house smooth pdfs for each galaxy
+        '''
+        
         # The number of galaxies represented in the train/test sets
         print("There are %d training galaxies selected"%self.train_z.shape[0])
         
@@ -182,6 +254,20 @@ class PhotoSOM(object):
     
     
     def predictionPlot(self, bins=100, title="", pixel=300):
+        '''
+        Plots predicted redshift values versus truth values
+        
+        Parameters:
+        bins: int
+            Resolution of 2D heatmap
+        title: string
+            Title of the overall plot
+        pixel: int
+            Length of one side of the square plot
+        
+        Returns: Altair plot
+        '''
+        
         pred_mean = np.empty(len(self.pdfs), dtype='O')
         for i in range(len(self.pdfs)):
             pred_mean[i] = self.pdfs[i].mean()
@@ -204,6 +290,10 @@ class PhotoSOM(object):
     
     
     def initSOM(self, size):
+        '''
+        Initializes Self-Organizing Map based on the random state of the class. The indices and identity of the galaxies within each cell of the SOM is stored for later.
+        '''
+        
         self.size = size
         # Data assignment and normalization
         data = np.apply_along_axis(lambda x: x/np.linalg.norm(x), 1, self.test_phot)
@@ -213,17 +303,34 @@ class PhotoSOM(object):
             self.som = MiniSom(size, size, self.test_phot.shape[1], sigma=1.0, learning_rate=0.5)
         self.som.random_weights_init(data)
         self.som.train(data, data.shape[0])
-        self.som_map = self.som.win_map(data)
+        self.som_map = self.som.win_map(data, True)
         
         self.index_map = np.empty((size, size), dtype='O')
         for c in self.som_map:
-            index = []
-            for vec in self.som_map[c]:
-                index.append(int(np.array(np.where(np.sum(data, axis=1) == np.sum(vec)))))
-            self.index_map[c[1],c[0]] = index
-
+            if self.som_map[c]:
+                self.index_map[c[1],c[0]] = self.som_map[c]
+            else:
+                self.index_map[c[1],c[0]] = [[]]
     
     def colorMap(self, title="", pixel=300, scheme='purples', filter1=2, filter2=3):
+        '''
+        Plots the average color of each cell within the SOM based on given optical bands
+        
+        Parameters:
+        title: string
+            Title of the overall plot
+        pixel: int
+            Length of one side of the square plot
+        scheme: string
+            Name of Vega color scheme
+        filter1: int
+            A number which defines the first color band used to define color (filter1-filter2)
+        filter2: int
+            Second color band
+        
+        Returns: Altair plot
+        '''
+        
         ri_colormap = np.zeros((self.size, self.size))
         for i in range(self.size):
             for j in range(self.size):
@@ -242,10 +349,27 @@ class PhotoSOM(object):
     
     
     def densityMap(self, title="", pixel=300, scheme='inferno'):
+        '''
+        Plots the number of galaxies within each SOM cell
+        
+        Parameters:
+        title: string
+            Title of the overall plot
+        pixel: int
+            Length of one side of the square plot
+        scheme: string
+            Name of Vega color scheme
+        
+        Returns: Altair plot
+        '''
+        
         densitymap = np.zeros((self.size, self.size))
         for i in range(self.size):
             for j in range(self.size):
-                densitymap[i,j] = len(self.index_map[i,j])
+                if self.index_map[i,j] == None:
+                    densitymap[i,j] = 0
+                else:
+                    densitymap[i,j] = len(self.index_map[i,j])
                 
         x, y = np.meshgrid(range(0, self.size), range(self.size-1,-1,-1))
         source = pd.DataFrame({'x': x.ravel(), 'y': y.ravel(), 'Galaxies': densitymap.ravel()})
@@ -257,6 +381,22 @@ class PhotoSOM(object):
     
     
     def chiSquaredTest(self, bins=10, title="", pixel=300, scheme='greys'):
+        '''
+        Plots the pass/fail status of the Chi-squared test for each cell
+        
+        Parameters:
+        bins: int
+            Number of bins used in the chi-squared test
+        title: string
+            Title of the overall plot
+        pixel: int
+            Length of one side of the square plot
+        scheme: string
+            Name of Vega color scheme
+        
+        Returns: Altair plot
+        '''
+        
         null_map = np.zeros((self.size, self.size))
         for i in range(self.size):
             for j in range(self.size):
@@ -283,6 +423,22 @@ class PhotoSOM(object):
     
 
     def chiSquaredMap(self, bins=10, title="", pixel=300, scheme='viridis'):
+        '''
+        Plots the chi-squared per degree of freedom for each SOM cell
+        
+        Parameters:
+        bins: int
+            Number of bins used in the chi-squared test
+        title: string
+            Title of the overall plot
+        pixel: int
+            Length of one side of the square plot
+        scheme: string
+            Name of Vega color scheme
+        
+        Returns: Altair plot
+        '''
+        
         chi_dof_map = np.zeros((self.size, self.size))
         for i in range(self.size):
             for j in range(self.size):
@@ -309,6 +465,16 @@ class PhotoSOM(object):
     
     
     def cdfHistogram(self, bins=30):
+        '''
+        Plots a histogram of the Conditional Distribution Function for each galaxy in the dataset
+        
+        Parameters:
+        bins: int
+            Number of bins in the plot
+        
+        Returns: Altair plot
+        '''
+        
         cdfs = np.empty(len(self.pdfs), dtype='O')
         for i in range(len(self.pdfs)):
             cdfs[i] = self.pdfs[i].cdf(self.test_z[i])
